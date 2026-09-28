@@ -1,6 +1,8 @@
 # 星际穿越 · Cosmic Flight
 
-一个纯前端单文件的 3D 宇宙穿越网页，基于 Three.js 实现。打开 `cosmic-flight.html` 即可体验。
+一个纯前端单文件的 3D 宇宙穿越网页，基于 Three.js 实现。打开 `index.html` 即可体验。
+
+**在线体验**：https://thekeydu.github.io/cosmic-flight/
 
 ## 效果预览
 
