@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星际穿越 · Cosmic Flight</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  #scene { display: block; width: 100%; height: 100%; }
+  #hud {
+    position: fixed; top: 28px; left: 32px; z-index: 10;
+    color: rgba(220, 230, 255, .92); font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    pointer-events: none; user-select: none;
+  }
+  #hud h1 {
+    font-size: 22px; font-weight: 300; letter-spacing: 8px;
+    text-shadow: 0 0 18px rgba(120, 160, 255, .8);
+  }
+  #hud p { margin-top: 8px; font-size: 12px; letter-spacing: 2px; opacity: .55; }
+  #speed {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    z-index: 10; color: rgba(200, 215, 255, .85);
+    font-family: "Consolas", "Courier New", monospace; font-size: 13px;
+    letter-spacing: 3px; text-align: center; pointer-events: none; user-select: none;
+  }
+  #speed .phase { color: rgba(150, 190, 255, .9); margin-bottom: 4px; display: block; }
+  #speed .bar {
+    width: 220px; height: 3px; margin: 8px auto 0;
+    background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden;
+  }
+  #speed .bar i {
+    display: block; height: 100%; width: 10%;
+    background: linear-gradient(90deg, #4d7cff, #9fd8ff);
+    box-shadow: 0 0 10px #6fa8ff; border-radius: 2px;
+    transition: width .2s ease;
+  }
+  #vignette {
+    position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,10,.55) 100%);
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="vignette"></div>
+<div id="hud">
+  <h1>星际穿越</h1>
+  <p>移动鼠标环顾四周 · 点击切换平稳 / 狂野飞行</p>
+</div>
+<div id="speed">
+  <span class="phase" id="phaseText">巡航 CRUISE</span>
+  <span id="speedText">VELOCITY 0.50c</span>
+  <div class="bar"><i id="speedBar"></i></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   基础场景
+============================================================ */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000005); // 整体背景保持黑色
+scene.fog = new THREE.Fog(0x000005, 1200, 3600);
+
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 8000);
+camera.position.set(0, 0, 0);
+
+const sun = new THREE.DirectionalLight(0xfff4e0, 2.2);
+sun.position.set(60, 40, 30);
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x334466, 0.9));
+
+/* ============================================================
+   银河背景:整体黑,点缀星云 + 银河带 + 远景星尘
+============================================================ */
+function nebulaTexture(hueA, hueB) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  // 主云团
+  const g = ctx.createRadialGradient(128, 128, 10, 128, 128, 128);
+  g.addColorStop(0, `hsla(${hueA}, 70%, 60%, .55)`);
+  g.addColorStop(0.45, `hsla(${hueB}, 65%, 45%, .22)`);
+  g.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  // 内部絮状结构
+  for (let i = 0; i < 26; i++) {
+    const x = 60 + Math.random() * 136, y = 60 + Math.random() * 136, r = 8 + Math.random() * 34;
+    const gg = ctx.createRadialGradient(x, y, 0, x, y, r);
+    gg.addColorStop(0, `hsla(${hueA + Math.random() * 40 - 20}, 80%, ${55 + Math.random() * 25}%, ${0.05 + Math.random() * 0.12})`);
+    gg.addColorStop(1, 'hsla(0,0%,0%,0)');
+    ctx.fillStyle = gg;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+  // 云中的亮星点
+  for (let i = 0; i < 14; i++) {
+    ctx.fillStyle = `rgba(255,255,255,${0.3 + Math.random() * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(40 + Math.random() * 176, 40 + Math.random() * 176, Math.random() * 1.4 + 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* 散布星云,极淡,不破坏黑色基调;分布在相机四周各个方向 */
+const nebulaHues = [[250, 280], [210, 250], [280, 320], [190, 230], [300, 340], [220, 260]];
+const nebulae = [];
+for (let i = 0; i < 16; i++) {
+  const hues = nebulaHues[i % nebulaHues.length];
+  const baseOpacity = 0.10 + Math.random() * 0.10;
+  const mat = new THREE.SpriteMaterial({
+    map: nebulaTexture(hues[0], hues[1]),
+    transparent: true,
+    opacity: baseOpacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: false
+  });
+  const sp = new THREE.Sprite(mat);
+  // 球面随机分布(略微偏向正前方),转向任何方向背景都不会全黑
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  const dist = 2400 + Math.random() * 900;
+  const basePos = new THREE.Vector3(
+    Math.sin(phi) * Math.cos(theta) * dist,
+    Math.sin(phi) * Math.sin(theta) * dist * 0.7,
+    -Math.abs(Math.cos(phi)) * dist - Math.random() * 600
+  );
+  sp.position.copy(basePos);
+  const baseScale = 1200 + Math.random() * 2000; // 足够大,FOV 变化时也不会显得骤缩
+  sp.scale.set(baseScale, baseScale, 1);
+  sp.material.rotation = Math.random() * Math.PI * 2;
+  scene.add(sp);
+  // 每团星云带独立的随机运动参数:漂移 / 自转 / 明暗呼吸
+  nebulae.push({
+    sp, basePos, baseScale, baseOpacity,
+    rotSpeed: (Math.random() - 0.5) * 0.06,
+    driftAmp: 60 + Math.random() * 160,
+    driftSpeed: 0.03 + Math.random() * 0.08,
+    pulseSpeed: 0.15 + Math.random() * 0.35,
+    phase: Math.random() * Math.PI * 2
+  });
+}
+
+/* 银河带:一条斜跨天幕的密集星尘带 */
+(function milkyWay() {
+  const N = 3200;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  // 带的方向(斜跨天空)
+  const dir = new THREE.Vector3(1, 0.45, -0.35).normalize();
+  const up = new THREE.Vector3(0, 1, 0);
+  const side = new THREE.Vector3().crossVectors(dir, up).normalize();
+  const norm = new THREE.Vector3().crossVectors(dir, side).normalize();
+  for (let i = 0; i < N; i++) {
+    const t = (Math.random() - 0.5) * 2;               // 沿带方向
+    const w = (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; // 高斯横向
+    const p = new THREE.Vector3()
+      .addScaledVector(dir, t * 3400)
+      .addScaledVector(norm, w * 420)
+      .addScaledVector(side, (Math.random() - 0.5) * 300);
+    p.z = Math.min(p.z, -600); // 保持在远方
+    if (p.length() < 1400) p.setLength(1400 + Math.random() * 1600);
+    pos[i*3] = p.x; pos[i*3+1] = p.y; pos[i*3+2] = p.z;
+    const warm = Math.random() < 0.3;
+    const b = 0.25 + Math.random() * 0.55;
+    col[i*3]   = b * (warm ? 1 : 0.85);
+    col[i*3+1] = b * 0.9;
+    col[i*3+2] = b * (warm ? 0.75 : 1);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 1.8, vertexColors: true, transparent: true, opacity: 0.8,
+    sizeAttenuation: true, depthWrite: false, fog: false
+  });
+  scene.add(new THREE.Points(geo, mat));
+})();
+
+/* 远景零星孤星 */
+(function farStars() {
+  const N = 700;
+  const pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const v = new THREE.Vector3(
+      (Math.random() - 0.5), (Math.random() - 0.5), -Math.random() * 0.9 - 0.1
+    ).normalize().multiplyScalar(2600 + Math.random() * 1200);
+    pos[i*3] = v.x; pos[i*3+1] = v.y; pos[i*3+2] = v.z;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color: 0xbcccff, size: 2.2, transparent: true, opacity: 0.65,
+    sizeAttenuation: true, depthWrite: false, fog: false
+  });
+  scene.add(new THREE.Points(geo, mat));
+})();
+
+/* ============================================================
+   飞行参数:平稳巡航 / 狂野模式(点击切换)
+   狂野模式随机编排:滑行 -> 指数爆发加速 -> 曲速 -> 急刹车
+============================================================ */
+const DEPTH = 3600;
+const CRUISE = 3, WARP_MAX = 38;
+
+let flightMode = 'smooth'; // 'smooth' | 'wild'
+let speed = CRUISE;
+let phaseLabel = '平稳巡航 SMOOTH';
+
+const easeInOutCubic = x => x < 0.5 ? 4*x*x*x : 1 - Math.pow(-2*x + 2, 3) / 2;
+const easeInExpo = x => x === 0 ? 0 : Math.pow(2, 10 * x - 10);   // 一脚踩死式的指数爆发
+const easeOutExpo = x => x === 1 ? 1 : 1 - Math.pow(2, -10 * x);  // 急刹车
+
+let wildPlan = null, wildTime = 0;
+function nextWildPlan(lastKey) {
+  if (lastKey === 'accel') {
+    return { key: 'warp', label: '曲速航行 WARP',
+             dur: 0.8 + Math.random() * 3,
+             from: speed, to: WARP_MAX, curve: t => t };
+  }
+  if (lastKey === 'warp') { // 急刹车:一瞬间从极速砸到极慢
+    return { key: 'brake', label: '急减速 HARD BRAKE',
+             dur: 0.15 + Math.random() * 0.3,
+             from: speed, to: 1 + Math.random() * 2, curve: easeOutExpo };
+  }
+  if (lastKey === 'coast') { // 随机:指数爆发 或 缓慢爬升
+    const sudden = Math.random() < 0.55;
+    return { key: 'accel',
+             label: sudden ? '爆发加速 SURGE' : '渐进加速 RAMP UP',
+             dur: sudden ? 0.7 + Math.random() * 1.3 : 2.5 + Math.random() * 3.5,
+             from: speed, to: WARP_MAX, curve: sudden ? easeInExpo : easeInOutCubic };
+  }
+  return { key: 'coast', label: '惯性滑行 COAST',
+           dur: 1.2 + Math.random() * 4,
+           from: speed, to: CRUISE + Math.random() * 5, curve: easeInOutCubic };
+}
+
+/* ============================================================
+   星轨:真实的小球体(恒星/小行星),高速时沿飞行方向被拉长
+   —— 不画线段,用 InstancedMesh 球体 + Z 轴拉伸
+============================================================ */
+const STAR_COUNT = 1600;
+const starGeo = new THREE.SphereGeometry(1, 6, 5);
+const starMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.95, fog: false });
+const starMesh = new THREE.InstancedMesh(starGeo, starMat, STAR_COUNT);
+starMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(starMesh);
+
+const starPalette = [
+  new THREE.Color(0xffffff), // 白
+  new THREE.Color(0xaaccff), // 蓝白
+  new THREE.Color(0x6688ff), // 蓝
+  new THREE.Color(0xffdd99), // 金黄
+  new THREE.Color(0xffaa66), // 橙
+  new THREE.Color(0xff8877), // 红
+  new THREE.Color(0x88ffdd), // 青
+  new THREE.Color(0xddaaff), // 紫
+];
+const stars = [];
+const dummy = new THREE.Object3D();
+
+function resetStar(s, randomZ) {
+  s.x = (Math.random() - 0.5) * 900;
+  s.y = (Math.random() - 0.5) * 900;
+  if (Math.abs(s.x) < 14 && Math.abs(s.y) < 14) {
+    s.x = (14 + Math.random() * 60) * Math.sign(s.x || 1);
+  }
+  s.z = randomZ ? -Math.random() * DEPTH : -DEPTH + Math.random() * 200;
+  s.r = 0.5 + Math.random() * 1.1;
+  if (Math.random() < 0.06) s.r = 1.8 + Math.random() * 1.4; // 少数大个子近星
+  s.color = starPalette[(Math.random() * starPalette.length) | 0];
+  s.len = 1; // 当前拉伸长度(缓存,回收判断用)
+}
+for (let i = 0; i < STAR_COUNT; i++) {
+  const s = {};
+  resetStar(s, true);
+  stars.push(s);
+  starMesh.setColorAt(i, s.color);
+}
+starMesh.instanceColor.needsUpdate = true;
+
+/* ============================================================
+   程序化行星纹理
+============================================================ */
+function canvasTexture(w, h, painter) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  painter(c.getContext('2d'), w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function bandedTexture(bands) {
+  return canvasTexture(512, 256, (ctx, w, h) => {
+    let y = 0;
+    while (y < h) {
+      const bh = 8 + Math.random() * 26;
+      ctx.fillStyle = bands[(Math.random() * bands.length) | 0];
+      ctx.fillRect(0, y, w, bh + 1);
+      ctx.globalAlpha = 0.25;
+      for (let i = 0; i < 40; i++) {
+        ctx.fillStyle = bands[(Math.random() * bands.length) | 0];
+        const ex = Math.random() * w, ey = y + Math.random() * bh;
+        ctx.beginPath();
+        ctx.ellipse(ex, ey, 14 + Math.random() * 46, 2 + Math.random() * 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      y += bh;
+    }
+  });
+}
+
+function rockyTexture(ocean, lands, polar) {
+  return canvasTexture(512, 256, (ctx, w, h) => {
+    ctx.fillStyle = ocean;
+    ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 26; i++) {
+      ctx.fillStyle = lands[(Math.random() * lands.length) | 0];
+      const cx = Math.random() * w, cy = h * 0.15 + Math.random() * h * 0.7;
+      for (let j = 0; j < 10; j++) {
+        ctx.beginPath();
+        ctx.ellipse(
+          cx + (Math.random() - 0.5) * 70,
+          cy + (Math.random() - 0.5) * 36,
+          8 + Math.random() * 30, 5 + Math.random() * 16,
+          Math.random() * Math.PI, 0, Math.PI * 2
+        );
+        ctx.fill();
+      }
+    }
+    if (polar) {
+      const g1 = ctx.createLinearGradient(0, 0, 0, h * 0.16);
+      g1.addColorStop(0, 'rgba(255,255,255,.95)');
+      g1.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g1; ctx.fillRect(0, 0, w, h * 0.16);
+      const g2 = ctx.createLinearGradient(0, h, 0, h * 0.84);
+      g2.addColorStop(0, 'rgba(255,255,255,.95)');
+      g2.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g2; ctx.fillRect(0, h * 0.84, w, h * 0.16);
+    }
+  });
+}
+
+function cloudTexture() {
+  return canvasTexture(512, 256, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    for (let i = 0; i < 70; i++) {
+      ctx.fillStyle = `rgba(255,255,255,${0.10 + Math.random() * 0.28})`;
+      ctx.beginPath();
+      ctx.ellipse(
+        Math.random() * w, Math.random() * h,
+        20 + Math.random() * 70, 4 + Math.random() * 12,
+        (Math.random() - 0.5) * 0.4, 0, Math.PI * 2
+      );
+      ctx.fill();
+    }
+  });
+}
+
+function ringTexture(r, g, b) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 1;
+  const ctx = c.getContext('2d');
+  for (let x = 0; x < 256; x++) {
+    const t = x / 255;
+    let a = Math.sin(t * 40) * 0.3 + Math.sin(t * 13) * 0.3 + 0.5;
+    a *= (t < 0.08 || t > 0.97) ? 0.15 : 1;
+    if (t > 0.62 && t < 0.68) a *= 0.15;
+    const shade = 0.7 + Math.sin(t * 22) * 0.25 + Math.random() * 0.08;
+    ctx.fillStyle = `rgba(${(r*shade)|0},${(g*shade)|0},${(b*shade)|0},${Math.max(0, Math.min(1, a))})`;
+    ctx.fillRect(x, 0, 1, 1);
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+/* ============================================================
+   行星建造工厂
+============================================================ */
+const planetTypes = [
+  { build() {
+      return { mat: new THREE.MeshPhongMaterial({
+        map: rockyTexture('#1a4f9c', ['#3f7a3a', '#7a6a3a', '#2e5d33', '#8a7a4a'], true),
+        shininess: 18, specular: new THREE.Color(0x335577) }), clouds: true };
+  }},
+  { build() {
+      return { mat: new THREE.MeshPhongMaterial({
+        map: rockyTexture('#b8552a', ['#8a3a1c', '#d07040', '#6e2f18', '#c05a30'], true),
+        shininess: 6 }) };
+  }},
+  { build() { // 土星:经典暗金环
+      return { mat: new THREE.MeshPhongMaterial({
+        map: bandedTexture(['#d8b878', '#c8a060', '#e8cc90', '#b89050', '#dcc088']),
+        shininess: 8 }), ring: [215, 195, 155] };
+  }},
+  { build() { // 木星:偶尔带一圈淡淡的暖色环
+      return { mat: new THREE.MeshPhongMaterial({
+        map: bandedTexture(['#c09060', '#a87848', '#e0b888', '#906838', '#d0a878', '#b06040']),
+        shininess: 8 }), ring: Math.random() < 0.4 ? [205, 175, 145] : null };
+  }},
+  { build() { // 海王星:冰蓝色环
+      return { mat: new THREE.MeshPhongMaterial({
+        map: bandedTexture(['#3a6fd8', '#2a55b8', '#5a8ae8', '#2040a0']),
+        shininess: 14, specular: new THREE.Color(0x224488) }),
+        clouds: true, ring: [145, 190, 240] };
+  }},
+  { build() {
+      return { mat: new THREE.MeshPhongMaterial({
+        map: bandedTexture(['#d8b060', '#c8a050', '#e8c478', '#b89040']),
+        shininess: 10 }), clouds: true };
+  }},
+  { build() {
+      return { mat: new THREE.MeshPhongMaterial({
+        map: rockyTexture('#8a8078', ['#6e6660', '#9a9088', '#5a544e', '#7a726a'], false),
+        shininess: 4 }) };
+  }},
+  { build() { // 冰行星:一半概率带淡青/淡紫色环
+      const ringColor = Math.random() < 0.5
+        ? (Math.random() < 0.5 ? [185, 225, 248] : [208, 185, 238])
+        : null;
+      return { mat: new THREE.MeshPhongMaterial({
+        map: rockyTexture('#a8d0e8', ['#ffffff', '#90c0dc', '#d8ecf8'], false),
+        shininess: 30, specular: new THREE.Color(0x88aacc) }), ring: ringColor };
+  }},
+  { build() {
+      return { mat: new THREE.MeshPhongMaterial({
+        map: rockyTexture('#3a1a10', ['#ff6a20', '#c03010', '#ff9a40', '#802008'], false),
+        emissive: new THREE.Color(0x501505), shininess: 4 }) };
+  }}
+];
+
+const PLANET_COUNT = 26;
+const planets = [];
+const sphereGeo = new THREE.SphereGeometry(1, 48, 32);
+
+function spawnPlanet(p, randomZ) {
+  const type = planetTypes[(Math.random() * planetTypes.length) | 0];
+  const built = type.build();
+  if (!p.group) {
+    p.group = new THREE.Group();
+    p.body = new THREE.Mesh(sphereGeo, built.mat);
+    p.group.add(p.body);
+    scene.add(p.group);
+  } else {
+    p.body.material.dispose();
+    p.body.material = built.mat;
+    if (p.cloud) { p.group.remove(p.cloud); p.cloud.material.dispose(); p.cloud = null; }
+    if (p.ring) { p.group.remove(p.ring); p.ring.material.dispose(); p.ring.geometry.dispose(); p.ring = null; }
+  }
+
+  const big = Math.random() < 0.28;
+  p.radius = big ? 6 + Math.random() * 9 : 1.6 + Math.random() * 4;
+  p.group.scale.setScalar(p.radius);
+
+  if (built.clouds) {
+    p.cloud = new THREE.Mesh(sphereGeo, new THREE.MeshPhongMaterial({
+      map: cloudTexture(), transparent: true, depthWrite: false, opacity: 0.9
+    }));
+    p.cloud.scale.setScalar(1.02);
+    p.group.add(p.cloud);
+  }
+  if (built.ring) {
+    const rg = new THREE.RingGeometry(1.35, 2.4, 96, 1);
+    const uv = rg.attributes.uv, pos = rg.attributes.position;
+    const v3 = new THREE.Vector3();
+    for (let i = 0; i < uv.count; i++) {
+      v3.fromBufferAttribute(pos, i);
+      uv.setXY(i, (v3.length() - 1.35) / (2.4 - 1.35), 0.5);
+    }
+    p.ring = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({
+      map: ringTexture(built.ring[0], built.ring[1], built.ring[2]),
+      side: THREE.DoubleSide, transparent: true, depthWrite: false
+    }));
+    p.ring.rotation.x = Math.PI / 2 - 0.35;
+    p.group.add(p.ring);
+  }
+
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const lateral = 22 + Math.random() * 130;
+  // 以当前视线方向为中心生成,保证飞船转向后前方仍有行星掠过
+  p.group.position.x = side * lateral * (0.5 + Math.random()) + camera.position.x;
+  p.group.position.y = (Math.random() - 0.5) * 2 * lateral * 0.8 + camera.position.y;
+  p.group.position.z = randomZ ? -Math.random() * DEPTH : -DEPTH + Math.random() * 300;
+
+  p.group.rotation.set(Math.random() * 0.6 - 0.3, Math.random() * Math.PI * 2, Math.random() * 0.6 - 0.3);
+  p.spin = (Math.random() - 0.5) * 0.25;
+}
+
+for (let i = 0; i < PLANET_COUNT; i++) {
+  const p = {};
+  spawnPlanet(p, true);
+  planets.push(p);
+}
+
+/* ============================================================
+   交互:鼠标环顾
+============================================================ */
+let mouseX = 0, mouseY = 0;
+window.addEventListener('mousemove', e => {
+  mouseX = (e.clientX / window.innerWidth - 0.5) * 2;
+  mouseY = (e.clientY / window.innerHeight - 0.5) * 2;
+});
+/* 自动驾驶:随机改变航向,爆发加速/曲速时转向更猛 */
+let autoX = 0, autoY = 0, autoTX = 0, autoTY = 0, autoTimer = 0;
+let brakeKick = 0; // 急刹车时船体向前的顿挫位移
+let reverseR = 0;  // 急停瞬间的"反向拉伸"强度(0~1,触发后快速衰减)
+/* 点击切换:平稳巡航 <-> 狂野随机飞行 */
+window.addEventListener('click', () => {
+  flightMode = flightMode === 'smooth' ? 'wild' : 'smooth';
+  wildPlan = null;
+  wildTime = 0;
+});
+
+const phaseText = document.getElementById('phaseText');
+const speedText = document.getElementById('speedText');
+const speedBar = document.getElementById('speedBar');
+
+/* ============================================================
+   主循环
+============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  /* --- 速度控制:平稳巡航 / 狂野随机(爆发加速 + 急刹车) --- */
+  if (flightMode === 'wild') {
+    if (!wildPlan) wildPlan = nextWildPlan('init');
+    wildTime += dt;
+    const tt = Math.min(wildTime / wildPlan.dur, 1);
+    speed = wildPlan.from + (wildPlan.to - wildPlan.from) * wildPlan.curve(tt);
+    phaseLabel = wildPlan.label;
+    if (tt >= 1) {
+      wildPlan = nextWildPlan(wildPlan.key);
+      wildTime = 0;
+      if (wildPlan.key === 'accel') {
+        // 爆发瞬间:船头猛甩向随机方向(左/右/上/下)
+        autoTX = (Math.random() - 0.5) * 2 * 52;
+        autoTY = (Math.random() - 0.5) * 2 * 38;
+        autoTimer = 0.9 + Math.random() * 1.4;
+      }
+      if (wildPlan.key === 'brake') {
+        // 急刹车瞬间:船体向前顿挫 + 画面反向拉伸回弹
+        brakeKick = 5 + Math.random() * 4;
+        reverseR = 1;
+      }
+    }
+  } else {
+    wildPlan = null;
+    phaseLabel = '平稳巡航 SMOOTH';
+    const target = CRUISE + Math.sin(clock.elapsedTime * 0.5) * 0.8;
+    speed += (target - speed) * Math.min(1, dt * 1.5);
+  }
+  const warp = THREE.MathUtils.clamp((speed - CRUISE) / (WARP_MAX - CRUISE), 0, 1);
+
+  /* --- 更新星体小球:高速时被拉长成星轨 --- */
+  for (let i = 0; i < STAR_COUNT; i++) {
+    const s = stars[i];
+    s.z += speed;
+
+    // depthT: 0 = 最前方深处, 1 = 相机身后
+    const depthT = THREE.MathUtils.clamp((s.z + DEPTH) / (DEPTH + 80), 0, 1);
+    const far = 1 - depthT;
+
+    /* 曲率空间感(电影式):
+       前方深处 -> 空间被压缩:星体向中心收拢、体积缩小,聚成致密的"奇点区"
+       近处四周 -> 空间被拉伸:星体向外扩张、沿飞行方向拉成长星轨,扫过屏幕边缘
+       急停瞬间 -> 反向拉伸:warpVis 变负,星轨猛地向反方向收缩回弹 */
+    const squeeze = 1 - warp * 0.5 * Math.pow(far, 2);          // 远处向中心收拢
+    const expand  = 1 + warp * 0.5 * Math.pow(depthT, 2);       // 近处向外扩张
+    const xyScale = squeeze * expand;
+    const warpVis = Math.max(-0.9, warp - reverseR * 1.7);      // 急停时变为负值
+    const stretch = Math.max(0.1, 1 + warpVis * (2 + 150 * Math.pow(depthT, 1.8)));
+    const srBase  = 0.35 + 0.65 * depthT;                       // 远处小、近处大
+    s.len = s.r * stretch;
+
+    if (s.z - s.len * 0.5 > 70) { resetStar(s, false); }
+
+    dummy.position.set(s.x * xyScale, s.y * xyScale, s.z);
+    const sr = s.r * srBase;
+    dummy.scale.set(sr, sr, s.len);
+    dummy.updateMatrix();
+    starMesh.setMatrixAt(i, dummy.matrix);
+  }
+  starMesh.instanceMatrix.needsUpdate = true;
+  starMat.opacity = 0.75 + warp * 0.25;
+
+  /* --- 行星 --- */
+  for (const p of planets) {
+    p.group.position.z += speed;
+    p.body.rotation.y += p.spin * dt;
+    if (p.cloud) p.cloud.rotation.y += p.spin * dt * 1.4;
+    if (p.group.position.z - p.radius * 3 > 40) spawnPlanet(p, false);
+  }
+
+  /* --- 相机:自动转向 + 鼠标环顾 + 呼吸浮动 + 曲速抖动 --- */
+  const time = clock.elapsedTime;
+  // 急停反向拉伸强度快速衰减
+  reverseR *= Math.max(0, 1 - dt * 2.2);
+  // 自动转向目标:每隔一小段时间随机换一个新航向,爆发/曲速时幅度加大
+  autoTimer -= dt;
+  if (autoTimer <= 0) {
+    autoTimer = 1.2 + Math.random() * 2.2;
+    const boosting = flightMode === 'wild' && wildPlan &&
+      (wildPlan.key === 'accel' || wildPlan.key === 'warp');
+    const boost = boosting ? 2.6 : 1;
+    autoTX = (Math.random() - 0.5) * 2 * 24 * boost;
+    autoTY = (Math.random() - 0.5) * 2 * 17 * boost;
+  }
+  const isAccel = flightMode === 'wild' && wildPlan && wildPlan.key === 'accel';
+  const isBrake = flightMode === 'wild' && wildPlan && wildPlan.key === 'brake';
+  // 爆发加速时转向响应极快(猛甩),平时平滑
+  const steerRate = isAccel ? 6.5 : 1.8;
+  autoX += (autoTX - autoX) * Math.min(1, dt * steerRate);
+  autoY += (autoTY - autoY) * Math.min(1, dt * steerRate);
+
+  const lookX = mouseX * 48 + autoX;
+  const lookY = -mouseY * 36 + autoY;
+  // 抖动:曲速常态抖动 + 加速/急刹车时的剧烈颠簸
+  const shake = warp * 0.55 + (isAccel ? 1.3 : 0) + (isBrake ? 2.4 : 0);
+  camera.position.x += (lookX + (Math.random() - 0.5) * shake - camera.position.x) * dt * 2;
+  camera.position.y += (lookY + Math.sin(time * 0.6) * 0.6 + (Math.random() - 0.5) * shake - camera.position.y) * dt * 2;
+  // 急刹车:船体向前顿挫一下再回弹
+  brakeKick *= Math.max(0, 1 - dt * 3.5);
+  camera.position.z = brakeKick;
+  camera.lookAt(camera.position.x * 1.4, camera.position.y * 1.4, -500);
+  camera.rotation.z += (lookX * -0.007 - camera.rotation.z) * dt * 2;
+
+  /* --- FOV 随速度扩张;急停瞬间先下冲到广角以下再弹回,形成反向拉伸 --- */
+  const targetFov = 72 + warp * 32 - reverseR * 22;
+  const fovRate = isBrake ? 10 : 3;
+  if (Math.abs(camera.fov - targetFov) > 0.05) {
+    camera.fov += (targetFov - camera.fov) * dt * fovRate;
+    camera.updateProjectionMatrix();
+  }
+
+  /* --- 星云:随机漂移 + 自转 + 明暗呼吸;尺寸随 FOV 反向补偿,避免狂野模式下骤缩 --- */
+  const fovHold = 1 + (Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) /
+                       Math.tan(THREE.MathUtils.degToRad(36)) - 1) * 0.85;
+  for (const n of nebulae) {
+    n.sp.material.rotation += n.rotSpeed * dt;
+    n.sp.position.x = n.basePos.x + Math.sin(time * n.driftSpeed + n.phase) * n.driftAmp;
+    n.sp.position.y = n.basePos.y + Math.cos(time * n.driftSpeed * 0.8 + n.phase * 1.7) * n.driftAmp * 0.7;
+    n.sp.position.z = n.basePos.z + Math.sin(time * n.driftSpeed * 0.6 + n.phase * 3.1) * n.driftAmp * 0.5;
+    n.sp.material.opacity = n.baseOpacity * (0.85 + 0.15 * Math.sin(time * n.pulseSpeed + n.phase * 2.3));
+    const ns = n.baseScale * fovHold;
+    n.sp.scale.set(ns, ns, 1);
+  }
+
+  /* --- HUD --- */
+  phaseText.textContent = phaseLabel;
+  speedText.textContent = 'VELOCITY ' + (speed / 6).toFixed(2) + 'c';
+  speedBar.style.width = (warp * 100).toFixed(1) + '%';
+
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
