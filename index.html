@@ -48,7 +48,7 @@
 <div id="vignette"></div>
 <div id="hud">
   <h1>星际穿越</h1>
-  <p>移动鼠标/手指环顾四周 · 点击/轻触切换平稳 / 狂野飞行 · VR 中扣动扳机切换</p>
+  <p>移动鼠标/手指环顾 · 点击循环切换:平稳 → 狂野 → 癫狂 · VR 扳机切换</p>
 </div>
 <div id="speed">
   <span class="phase" id="phaseText">巡航 CRUISE</span>
@@ -244,6 +244,46 @@ let phaseLabel = '平稳巡航 SMOOTH';
 const easeInOutCubic = x => x < 0.5 ? 4*x*x*x : 1 - Math.pow(-2*x + 2, 3) / 2;
 const easeInExpo = x => x === 0 ? 0 : Math.pow(2, 10 * x - 10);   // 一脚踩死式的指数爆发
 const easeOutExpo = x => x === 1 ? 1 : 1 - Math.pow(2, -10 * x);  // 急刹车
+const easeOutCubic = x => 1 - Math.pow(1 - x, 3);                 // 骤减
+
+/* 癫狂模式:完全随机编排,速度可以为负(倒退飞行)
+   不按固定顺序——随机加速 / 随机减速 / 随机急刹 / 随机加速倒退,任何动作都可以接任何动作 */
+const INSANE_MAX = 46;
+const INSANE_RMAX = 30; // 倒退极速
+function nextInsanePlan(prevKey) {
+  const pool = [];
+  const add = (key, w) => { if (key !== prevKey) pool.push([key, w]); };
+  /* 全动作池,不分正反方向,加权纯随机(仅避免与上一动作重复) */
+  add('crawl', 2); add('cruise', 2); add('accel', 3); add('warp', 2);
+  add('decel', 2); add('brake', 1.5); add('reverse', 2.5);
+  add('raccel', 2.5); add('rcoast', 1.5); add('rbrake', 1.5);
+  let r = Math.random() * pool.reduce((s, p) => s + p[1], 0);
+  let key = pool[0][0];
+  for (const [k, w] of pool) { r -= w; if (r <= 0) { key = k; break; } }
+  switch (key) {
+    case 'crawl':   return { key, label: '缓慢漂移 DRIFT',     dur: 1.5 + Math.random() * 3,
+                             from: speed, to: 0.8 + Math.random() * 1.6, curve: easeInOutCubic };
+    case 'cruise':  return { key, label: '匀速航行 STEADY',    dur: 1 + Math.random() * 3,
+                             from: speed, to: speed, curve: t => t };
+    case 'accel':   return { key, label: '爆发加速 SURGE',     dur: 0.5 + Math.random() * 1.2,
+                             from: speed, to: INSANE_MAX, curve: easeInExpo };
+    case 'warp':    return { key, label: '曲速狂飙 WARP',      dur: 1.5 + Math.random() * 3.5,
+                             from: speed, to: INSANE_MAX, curve: t => t };
+    case 'decel':   return { key, label: '骤然减速 PLUNGE',    dur: 0.7 + Math.random() * 1.5,
+                             from: speed, to: CRUISE + Math.random() * 6, curve: easeOutCubic };
+    case 'reverse': return { key, label: '减速逆行 REVERSE',   dur: 1.2 + Math.random() * 2,
+                             from: speed, to: -(1.5 + Math.random() * 3.5), curve: easeInOutCubic };
+    case 'raccel':  return { key, label: '反向加速 BACK SURGE', dur: 0.5 + Math.random() * 1.2,
+                             from: speed, to: -(INSANE_RMAX * (0.6 + Math.random() * 0.4)), curve: easeInExpo };
+    case 'rcoast':  return { key, label: '倒飞巡航 DRIFT BACK', dur: 1.5 + Math.random() * 3,
+                             from: speed, to: speed, curve: t => t };
+    case 'rbrake':  return { key, label: speed < -2 ? '逆行急刹 REVERSE BRAKE' : '急刹 SLAM STOP',
+                             dur: 0.12 + Math.random() * 0.3,
+                             from: speed, to: 0.5 + Math.random() * 2, curve: easeOutExpo };
+    default:        return { key: 'brake', label: '急刹 HARD BRAKE', dur: 0.12 + Math.random() * 0.3,
+                             from: speed, to: 1 + Math.random() * 2, curve: easeOutExpo };
+  }
+}
 
 let wildPlan = null, wildTime = 0;
 function nextWildPlan(lastKey) {
@@ -293,13 +333,15 @@ const starPalette = [
 const stars = [];
 const dummy = new THREE.Object3D();
 
-function resetStar(s, randomZ) {
+function resetStar(s, randomZ, behind) {
   s.x = (Math.random() - 0.5) * 900;
   s.y = (Math.random() - 0.5) * 900;
   if (Math.abs(s.x) < 14 && Math.abs(s.y) < 14) {
     s.x = (14 + Math.random() * 60) * Math.sign(s.x || 1);
   }
-  s.z = randomZ ? -Math.random() * DEPTH : -DEPTH + Math.random() * 200;
+  // behind: 倒退飞行时,新星从相机身后进入,随后向远方退去
+  s.z = behind ? 40 + Math.random() * 25   // 须低于前端回收线 70,避免刚生成就被误回收
+      : randomZ ? -Math.random() * DEPTH : -DEPTH + Math.random() * 200;
   s.r = 0.5 + Math.random() * 1.1;
   if (Math.random() < 0.06) s.r = 1.8 + Math.random() * 1.4; // 少数大个子近星
   s.color = starPalette[(Math.random() * starPalette.length) | 0];
@@ -468,7 +510,7 @@ const PLANET_COUNT = 26;
 const planets = [];
 const sphereGeo = new THREE.SphereGeometry(1, 48, 32);
 
-function spawnPlanet(p, randomZ) {
+function spawnPlanet(p, randomZ, behind) {
   const type = planetTypes[(Math.random() * planetTypes.length) | 0];
   const built = type.build();
   if (!p.group) {
@@ -523,7 +565,9 @@ function spawnPlanet(p, randomZ) {
     p.group.position.x = rig.position.x + (Math.random() - 0.5) * 4;
     p.group.position.y = rig.position.y + (Math.random() - 0.5) * 4;
   }
-  p.group.position.z = randomZ ? -Math.random() * DEPTH : -DEPTH + Math.random() * 300;
+  // behind: 倒退飞行时从相机身后进入(坐标须低于回收线,避免被误回收)
+  p.group.position.z = behind ? 10 + Math.random() * 20
+                     : randomZ ? -Math.random() * DEPTH : -DEPTH + Math.random() * 300;
 
   p.group.rotation.set(Math.random() * 0.6 - 0.3, Math.random() * Math.PI * 2, Math.random() * 0.6 - 0.3);
   p.spin = (Math.random() - 0.5) * 0.25;
@@ -548,9 +592,10 @@ window.addEventListener('pointermove', e => {
 let autoX = 0, autoY = 0, autoTX = 0, autoTY = 0, autoTimer = 0;
 let brakeKick = 0; // 急刹车时船体向前的顿挫位移
 let reverseR = 0;  // 急停瞬间的"反向拉伸"强度(0~1,触发后快速衰减)
-/* 点击/轻触/VR 扳机切换:平稳巡航 <-> 狂野随机飞行 */
+/* 点击/轻触/VR 扳机循环切换:平稳巡航 -> 狂野 -> 癫狂 */
 function toggleFlightMode() {
-  flightMode = flightMode === 'smooth' ? 'wild' : 'smooth';
+  flightMode = flightMode === 'smooth' ? 'wild'
+             : flightMode === 'wild' ? 'insane' : 'smooth';
   wildPlan = null;
   wildTime = 0;
 }
@@ -574,26 +619,42 @@ const clock = new THREE.Clock();
 function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
-  /* --- 速度控制:平稳巡航 / 狂野随机(爆发加速 + 急刹车) --- */
-  if (flightMode === 'wild') {
-    if (!wildPlan) wildPlan = nextWildPlan('init');
+  /* --- 速度控制:平稳巡航 / 狂野随机 / 癫狂全随机 --- */
+  if (flightMode !== 'smooth') {
+    const insane = flightMode === 'insane';
+    if (!wildPlan) wildPlan = insane ? nextInsanePlan(null) : nextWildPlan('init');
     wildTime += dt;
     const tt = Math.min(wildTime / wildPlan.dur, 1);
     speed = wildPlan.from + (wildPlan.to - wildPlan.from) * wildPlan.curve(tt);
     phaseLabel = wildPlan.label;
     if (tt >= 1) {
-      wildPlan = nextWildPlan(wildPlan.key);
+      wildPlan = insane ? nextInsanePlan(wildPlan.key) : nextWildPlan(wildPlan.key);
       wildTime = 0;
-      if (wildPlan.key === 'accel') {
-        // 爆发瞬间:船头猛甩向随机方向(左/右/上/下)
-        autoTX = (Math.random() - 0.5) * 2 * 52;
-        autoTY = (Math.random() - 0.5) * 2 * 38;
-        autoTimer = 0.9 + Math.random() * 1.4;
-      }
-      if (wildPlan.key === 'brake') {
-        // 急刹车瞬间:船体向前顿挫 + 画面反向拉伸回弹
-        brakeKick = 5 + Math.random() * 4;
-        reverseR = 1;
+      if (insane) {
+        // 癫狂:每次换挡都猛甩船头(左/右/斜上/下,幅度更大)
+        autoTX = (Math.random() - 0.5) * 2 * 64;
+        autoTY = (Math.random() - 0.5) * 2 * 46;
+        autoTimer = 0.7 + Math.random() * 1.2;
+        if (wildPlan.key === 'brake' || wildPlan.key === 'rbrake') {
+          // 急刹/逆行急刹:船体顿挫 + 画面反向拉伸回弹
+          brakeKick = 5 + Math.random() * 5; reverseR = 1;
+        }
+        else if (wildPlan.key === 'decel' || wildPlan.key === 'reverse') {
+          // 骤然减速/减速穿零:轻微回缩
+          brakeKick = 3 + Math.random() * 3; reverseR = 0.45;
+        }
+      } else {
+        if (wildPlan.key === 'accel') {
+          // 爆发瞬间:船头猛甩向随机方向(左/右/上/下)
+          autoTX = (Math.random() - 0.5) * 2 * 52;
+          autoTY = (Math.random() - 0.5) * 2 * 38;
+          autoTimer = 0.9 + Math.random() * 1.4;
+        }
+        if (wildPlan.key === 'brake') {
+          // 急刹车瞬间:船体向前顿挫 + 画面反向拉伸回弹
+          brakeKick = 5 + Math.random() * 4;
+          reverseR = 1;
+        }
       }
     }
   } else {
@@ -602,30 +663,37 @@ function animate() {
     const target = CRUISE + Math.sin(clock.elapsedTime * 0.5) * 0.8;
     speed += (target - speed) * Math.min(1, dt * 1.5);
   }
-  const warp = THREE.MathUtils.clamp((speed - CRUISE) / (WARP_MAX - CRUISE), 0, 1);
+  /* 曲率强度按速度绝对值计算——倒退飞行(负速度)同样拉出星轨 */
+  const spdAbs = Math.abs(speed);
+  const warp = THREE.MathUtils.clamp((spdAbs - CRUISE) / (WARP_MAX - CRUISE), 0, 1);
+  const flyDir = speed < 0 ? -1 : 1; // 飞行方向:1 前进, -1 倒退
 
-  /* --- 更新星体小球:高速时被拉长成星轨 --- */
+  /* --- 更新星体小球:高速时被拉长成星轨(前进/倒退均适用) --- */
   for (let i = 0; i < STAR_COUNT; i++) {
     const s = stars[i];
     s.z += speed;
 
-    // depthT: 0 = 最前方深处, 1 = 相机身后
-    const depthT = THREE.MathUtils.clamp((s.z + DEPTH) / (DEPTH + 80), 0, 1);
+    // 以飞行方向为基准计算深度:ze 越大越"接近相机";倒退时镜像
+    const ze = s.z * flyDir;
+    // depthT: 0 = 行进方向深处, 1 = 相机身后
+    const depthT = THREE.MathUtils.clamp((ze + DEPTH) / (DEPTH + 80), 0, 1);
     const far = 1 - depthT;
 
     /* 曲率空间感(电影式):
-       前方深处 -> 空间被压缩:星体向中心收拢、体积缩小,聚成致密的"奇点区"
+       行进方向深处 -> 空间被压缩:星体向中心收拢、体积缩小,聚成致密的"奇点区"
        近处四周 -> 空间被拉伸:星体向外扩张、沿飞行方向拉成长星轨,扫过屏幕边缘
        急停瞬间 -> 反向拉伸:warpVis 变负,星轨猛地向反方向收缩回弹 */
-    const squeeze = 1 - warp * 0.5 * Math.pow(far, 2);          // 远处向中心收拢
+    const squeeze = 1 - warp * 0.5 * Math.pow(far, 2);          // 深处向中心收拢
     const expand  = 1 + warp * 0.5 * Math.pow(depthT, 2);       // 近处向外扩张
     const xyScale = squeeze * expand;
     const warpVis = Math.max(-0.9, warp - reverseR * 1.7);      // 急停时变为负值
     const stretch = Math.max(0.1, 1 + warpVis * (2 + 150 * Math.pow(depthT, 1.8)));
-    const srBase  = 0.35 + 0.65 * depthT;                       // 远处小、近处大
+    const srBase  = 0.35 + 0.65 * depthT;                       // 深处小、近处大
     s.len = s.r * stretch;
 
-    if (s.z - s.len * 0.5 > 70) { resetStar(s, false); }
+    /* 双向回收:飞出哪一端,就从相反一端重新进入 */
+    if (s.z - s.len * 0.5 > 70) { resetStar(s, false); }                 // 飞出身后 -> 放到正前方深处
+    else if (s.z + s.len * 0.5 < -DEPTH - 50) { resetStar(s, false, true); } // 飞出前方深处(倒退) -> 放到身后
 
     dummy.position.set(s.x * xyScale, s.y * xyScale, s.z);
     const sr = s.r * srBase;
@@ -636,12 +704,13 @@ function animate() {
   starMesh.instanceMatrix.needsUpdate = true;
   starMat.opacity = 0.75 + warp * 0.25;
 
-  /* --- 行星 --- */
+  /* --- 行星(双向回收:倒退时从身后进入) --- */
   for (const p of planets) {
     p.group.position.z += speed;
     p.body.rotation.y += p.spin * dt;
     if (p.cloud) p.cloud.rotation.y += p.spin * dt * 1.4;
     if (p.group.position.z - p.radius * 3 > 40) spawnPlanet(p, false);
+    else if (p.group.position.z + p.radius * 3 < -DEPTH - 50) spawnPlanet(p, false, true);
   }
 
   /* --- 相机:自动转向 + 鼠标环顾 + 呼吸浮动 + 曲速抖动 --- */
@@ -652,23 +721,25 @@ function animate() {
   autoTimer -= dt;
   if (autoTimer <= 0) {
     autoTimer = 1.2 + Math.random() * 2.2;
-    const boosting = flightMode === 'wild' && wildPlan &&
-      (wildPlan.key === 'accel' || wildPlan.key === 'warp');
+    const boosting = flightMode !== 'smooth' && wildPlan &&
+      (wildPlan.key === 'accel' || wildPlan.key === 'warp' || wildPlan.key === 'raccel');
     const boost = boosting ? 2.6 : 1;
     autoTX = (Math.random() - 0.5) * 2 * 24 * boost;
     autoTY = (Math.random() - 0.5) * 2 * 17 * boost;
   }
-  const isAccel = flightMode === 'wild' && wildPlan && wildPlan.key === 'accel';
-  const isBrake = flightMode === 'wild' && wildPlan && wildPlan.key === 'brake';
-  // 爆发加速时转向响应极快(猛甩),平时平滑
-  const steerRate = isAccel ? 6.5 : 1.8;
+  const flying = flightMode !== 'smooth';
+  const insane = flightMode === 'insane';
+  const isAccel = flying && wildPlan && (wildPlan.key === 'accel' || wildPlan.key === 'raccel');
+  const isBrake = flying && wildPlan && (wildPlan.key === 'brake' || wildPlan.key === 'rbrake');
+  // 爆发加速时转向响应极快(猛甩);癫狂模式全程高响应,平时平滑
+  const steerRate = isAccel ? 6.5 : insane ? 5 : 1.8;
   autoX += (autoTX - autoX) * Math.min(1, dt * steerRate);
   autoY += (autoTY - autoY) * Math.min(1, dt * steerRate);
 
   const lookX = mouseX * 48 + autoX;
   const lookY = -mouseY * 36 + autoY;
-  // 抖动:曲速常态抖动 + 加速/急刹车时的剧烈颠簸
-  const shake = warp * 0.55 + (isAccel ? 1.3 : 0) + (isBrake ? 2.4 : 0);
+  // 抖动:曲速常态抖动 + 加速/急刹车时的剧烈颠簸,癫狂模式整体更颠
+  const shake = (warp * 0.55 + (isAccel ? 1.3 : 0) + (isBrake ? 2.4 : 0)) * (insane ? 1.5 : 1);
   const inXR = renderer.xr.isPresenting;
   // 急刹车顿挫衰减(两种模式共用)
   brakeKick *= Math.max(0, 1 - dt * 3.5);
@@ -711,7 +782,7 @@ function animate() {
 
   /* --- HUD --- */
   phaseText.textContent = phaseLabel;
-  speedText.textContent = 'VELOCITY ' + (speed / 6).toFixed(2) + 'c';
+  speedText.textContent = (speed < -0.5 ? 'VELOCITY ' : 'VELOCITY +') + (speed / 6).toFixed(2) + 'c' + (speed < -0.5 ? ' [逆行]' : '');
   speedBar.style.width = (warp * 100).toFixed(1) + '%';
 
   renderer.render(scene, camera);
