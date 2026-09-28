@@ -7,6 +7,8 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  /* 禁止浏览器默认触摸手势(滚动/缩放),保证 pointer 事件在移动端稳定触发 */
+  html, body, #scene { touch-action: none; user-select: none; -webkit-user-select: none; }
   #scene { display: block; width: 100%; height: 100%; }
   #hud {
     position: fixed; top: 28px; left: 32px; z-index: 10;
@@ -46,7 +48,7 @@
 <div id="vignette"></div>
 <div id="hud">
   <h1>星际穿越</h1>
-  <p>移动鼠标环顾四周 · 点击切换平稳 / 狂野飞行</p>
+  <p>移动鼠标/手指环顾四周 · 点击/轻触切换平稳 / 狂野飞行</p>
 </div>
 <div id="speed">
   <span class="phase" id="phaseText">巡航 CRUISE</span>
@@ -517,7 +519,8 @@ for (let i = 0; i < PLANET_COUNT; i++) {
    交互:鼠标环顾
 ============================================================ */
 let mouseX = 0, mouseY = 0;
-window.addEventListener('mousemove', e => {
+/* Pointer Events:同时兼容鼠标和触屏(手机拖动也能环顾四周) */
+window.addEventListener('pointermove', e => {
   mouseX = (e.clientX / window.innerWidth - 0.5) * 2;
   mouseY = (e.clientY / window.innerHeight - 0.5) * 2;
 });
@@ -525,8 +528,8 @@ window.addEventListener('mousemove', e => {
 let autoX = 0, autoY = 0, autoTX = 0, autoTY = 0, autoTimer = 0;
 let brakeKick = 0; // 急刹车时船体向前的顿挫位移
 let reverseR = 0;  // 急停瞬间的"反向拉伸"强度(0~1,触发后快速衰减)
-/* 点击切换:平稳巡航 <-> 狂野随机飞行 */
-window.addEventListener('click', () => {
+/* 点击/轻触切换:平稳巡航 <-> 狂野随机飞行(pointerup 兼容鼠标与触屏) */
+window.addEventListener('pointerup', () => {
   flightMode = flightMode === 'smooth' ? 'wild' : 'smooth';
   wildPlan = null;
   wildTime = 0;
